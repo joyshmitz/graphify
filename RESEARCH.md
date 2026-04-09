@@ -351,14 +351,16 @@ AGENTS.md line 835: "potentially dozen of other agents working on the project at
 
 ### Empirical Verification (graphify AST extraction on frankensqlite)
 
-graphify extracted 31,656 nodes, 74,036 edges, 351 communities, and 1,696 articulation points from 644 Rust files (tree-sitter, 0 LLM tokens). Overlaying with beads issue data:
+graphify extracted 31,656 nodes, 74,036 edges, 351 communities, and 1,696 articulation points from 644 Rust files (tree-sitter, 0 LLM tokens). Overlaying with beads issue data (full text search in titles + descriptions):
 
 | Assessment | Crates | Example |
 |---|---|---|
-| HIGH RISK (many nodes, few issues) | fsqlite-harness, fsqlite-core, fsqlite-func, fsqlite-types | harness: 8,897 nodes / 24 issues = 371 nodes/issue |
-| BLIND SPOT (code exists, zero issues) | fsqlite-e2e, fsqlite | e2e: 2,628 nodes, 0 issues |
+| HIGH RISK (many nodes, few issues) | fsqlite-harness, fsqlite-core, fsqlite-func | harness: 8,897 nodes / 24 issues = 371 nodes/issue |
+| BLIND SPOT (code exists, zero issues) | fsqlite, fsqlite-ext-json, fsqlite-ext-fts5, fsqlite-ext-icu, fsqlite-ext-misc, fsqlite-ext-fts3 | fsqlite: 757 nodes, 0 issues |
+| UNDER-TRACKED | fsqlite-types (1,068 nodes / 8 issues), fsqlite-parser (740 / 5), fsqlite-btree (680 / 6) | parser.rs is articulation point with degree 387 |
 | OVER-PLANNED (issues ahead of code) | fsqlite-wasm | 76 nodes / 69 issues — crate barely exists |
-| CRITICAL articulation point, few issues | fsqlite-parser/parser.rs | degree 387, only 5 issues in crate |
+
+**Note on data accuracy:** An initial analysis used hardcoded issue counts from a prior keyword-only title search, producing false results (e.g., fsqlite-e2e reported as "BLIND SPOT" with 0 issues — actual count is 64). The corrected data above comes from full-text search across titles and descriptions. Unmapped issues: 82 of 314 (26%), not 33% as initially reported.
 
 Key god node finding: `parse_one()` has 274 edges and `Parser` has 86 edges — both in parser.rs (articulation point, degree 387). But fsqlite-parser has only 5 open issues. bv doesn't recommend any parser work because the task graph shows no blocked dependencies there.
 
@@ -375,6 +377,8 @@ Full data: frankensqlite branch `research/graphify-gap-verification`, file `GAP1
 3. **Trauma rules don't scale** — AGENTS.md captures one incident manually; CASS would systematize this
 4. **No traceability chain** — spec→issue→crate→file→test links are not tracked end-to-end
 5. **Multi-agent workflows amplify the gap** — 12 agents without architectural awareness multiply the risk of unintended damage
+
+**Methodological note:** The initial overlay used hardcoded issue counts from a keyword-only title search, leading to two false BLIND SPOT findings (fsqlite-e2e: reported 0 issues, actual 64; fsqlite-ast: reported 0, actual 42) and inflated unmapped rate (33% vs actual 26%). These were corrected after the full-text background analysis completed. The error itself illustrates the gap: using stale/approximate data instead of waiting for accurate results produces wrong conclusions — the same failure mode this research documents.
 
 ---
 
