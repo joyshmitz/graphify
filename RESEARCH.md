@@ -265,6 +265,102 @@ No single tool provides the full picture. Together they form a closed loop:
 
 ---
 
+## Gap 1 Verification: frankensqlite Case Study
+
+**Test subject:** `/Users/sd/projects/frankensqlite/` — ground-up Rust reimplementation of SQLite with MVCC concurrent writers. 750K LOC, 26 crates, 644 .rs files. 1757 beads issues (314 open, 1398 closed, 277 blocked). No graphify graph exists.
+
+### Six Sources of Knowledge, Six Separate Views
+
+| Source | What it knows | What it doesn't know |
+|---|---|---|
+| **br (1757 issues)** | Task dependencies, priorities, blockers, statuses | Which code modules an issue touches, architectural risk |
+| **bv (triage)** | PageRank/betweenness in task graph, ImpactScore | connection.rs = 88K LOC, fsqlite-mvcc = 65K LOC, crate dep depth |
+| **AGENTS.md (842 lines)** | Workflow rules, toolchain, trauma rules, multi-agent protocol | Doesn't codify architectural risk zones or god nodes |
+| **COMPREHENSIVE_SPEC (18K lines)** | Full specification: MVCC, RaptorQ, SSI, ECS, all subsystems | Not linked to issues — "what's specified" vs "what's built" vs "what's tracked" |
+| **tasks.md (phases 1-9)** | Original phased plan with checkboxes | Stale — says Phase 2 "IN PROGRESS" but code is at Phase 6+ |
+| **Code (750K LOC)** | Actual state — what compiles and passes tests | No context for "why" or "what's left" |
+
+No single source provides the full picture. Each answers a different question but none answers: "what is architecturally important, how well is it covered by issues, and what's the risk?"
+
+### Finding 1: Issue-to-Architecture Mapping is Absent
+
+Open issues by crate mention (text search in title + description, 314 open issues):
+
+| Crate | LOC | Open issues mentioning it | LOC per issue |
+|---|---|---|---|
+| fsqlite-core | 132K | 58 | 2,286 |
+| fsqlite-harness | 106K | 24 | 4,417 |
+| fsqlite-mvcc | 65K | 50 | 1,300 |
+| fsqlite-e2e | 54K | 0 | ∞ |
+| fsqlite-vdbe | 45K | 24 | 1,875 |
+| fsqlite-pager | 21K | 21 | 1,000 |
+| fsqlite-wal | 19K | 34 | 559 |
+| fsqlite-types | 17K | 8 | 2,125 |
+| fsqlite-btree | 15K | 6 | 2,500 |
+| fsqlite-parser | 15K | 5 | 3,000 |
+| fsqlite-wasm | — | 69 | over-planned (crate doesn't exist yet) |
+
+104 of 314 open issues (33%) mention no crate at all. These are abstract tasks ("automate perf", "wire default runtime path") that bv ranks alongside concrete ones without knowing their blast radius.
+
+### Finding 2: connection.rs (88K LOC) is Invisible to Task Graph
+
+The single largest file in the project — `crates/fsqlite-core/src/connection.rs` at 88,683 lines — is larger than the entire graphify codebase (7.3K LOC). It contains the parse cache, compiled cache, concurrent_mode_default, and the full DDL/DML executor.
+
+bv's top recommendation `bd-db300.1.3` ("automate perf") scores 0.47. PERFORMANCE_OPTIMIZATION_PLAN.md specifically identifies `connection.rs ~lines 1448-1456` and `~lines 2267-2383` as bottleneck locations. But bv doesn't know this. The performance plan and the triage engine live in separate worlds.
+
+### Finding 3: AGENTS.md Trauma Rules = Manual CASS
+
+AGENTS.md lines 263-285 contain a hand-written trauma rule:
+
+> "On Feb 10 2026, an agent set concurrent_mode_default to false and implemented serialized file locking in MemoryVfs, completely defeating the project's core innovation."
+
+This is exactly what CASS procedural memory does — recording a harmful pattern with context. But AGENTS.md does this manually for one incident. It doesn't scale to 750K LOC across 26 crates. CASS would systematically capture, score, and surface such patterns with confidence decay.
+
+### Finding 4: Spec→Issues→Code→Tests — No Traceability Chain
+
+BEAD_AUDIT_REPORT.md shows 149 beads mapped to spec sections, with overlap issues in §4 (Asupersync) and §5.10 (Write Merging). UNIT_INVARIANT_MATRIX.md shows 5,016 tests with P0 gaps in "MVCC concurrent tests, RaptorQ repair, Pager integration."
+
+But nobody tracks the full chain: spec section X → issue bd-YYY → crate fsqlite-Z → file F.rs → tests T1,T2. Each link is tracked separately.
+
+### Finding 5: Crate Dependency Depth Amplifies Risk
+
+PROPOSED_ARCHITECTURE.md documents the dependency tree:
+```
+fsqlite-core → vdbe → btree → pager → vfs → types
+                                             → error
+             → mvcc → wal → pager → vfs
+             → planner → ast → types
+             → parser → ast → types
+```
+
+A change in fsqlite-types propagates through the entire stack. 8 open issues mention fsqlite-types — none is tagged as "high blast radius." bv can't compute this because it only sees task-level dependencies (issue blocks issue), not code-level dependencies (crate depends on crate).
+
+### Finding 6: Multi-Agent Risk Without Architectural Awareness
+
+AGENTS.md line 835: "potentially dozen of other agents working on the project at the same time." Agent Mail provides file reservations but not architectural awareness. An agent reserving `crates/fsqlite-types/src/lib.rs` doesn't know it affects every other crate. An agent working on `connection.rs` doesn't know 3 other agents have issues touching the same 88K-line file.
+
+### What graphify Would Provide Here
+
+| Scenario | Without graphify | With graphify overlay |
+|---|---|---|
+| Agent takes `bd-db300.5.1` (per-core txn pipeline) | bv says score=0.30, "recommended" | graphify says "touches connection.rs (god node, 88K LOC), fsqlite-mvcc (65K, 797 tests). Blast radius: CRITICAL" |
+| Agent takes `bd-35lpy` (WASM bindgen API) | bv says score=0.31 | graphify says "touches fsqlite-wasm (leaf crate, 0 internal deps). Blast radius: LOW" |
+| New agent starts session | Reads 842-line AGENTS.md, doesn't know god nodes | Reads GRAPH_REPORT.md — sees top communities, god nodes, risk zones in 30 seconds |
+| Performance regression | Manual debugging, searching flamegraphs | graphify shows critical path parser→planner→vdbe→btree→pager, agent knows where to look |
+| 12 agents working simultaneously | File reservations prevent edit conflicts | Knowledge graph prevents architectural damage — agents know which zones are high-risk |
+
+### Verdict
+
+**Gap 1 is confirmed and deeper than initially theorized.** It is not simply "graphify isn't linked to br." It is:
+
+1. **Six knowledge sources, none complete** — spec, issues, code, tests, perf plan, and trauma rules each cover a fragment
+2. **Architectural risk is invisible to task graph** — bv ranks issues without LOC, dependency depth, or test coverage data
+3. **Trauma rules don't scale** — AGENTS.md captures one incident manually; CASS would systematize this
+4. **No traceability chain** — spec→issue→crate→file→test links are not tracked end-to-end
+5. **Multi-agent workflows amplify the gap** — 12 agents without architectural awareness multiply the risk of unintended damage
+
+---
+
 ## Next Steps (research, not implementation)
 
 - [ ] Map concrete data flows: what exact JSON fields would an overlay need from graph.json + issues.jsonl
