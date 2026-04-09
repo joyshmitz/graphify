@@ -349,6 +349,23 @@ AGENTS.md line 835: "potentially dozen of other agents working on the project at
 | Performance regression | Manual debugging, searching flamegraphs | graphify shows critical path parser→planner→vdbe→btree→pager, agent knows where to look |
 | 12 agents working simultaneously | File reservations prevent edit conflicts | Knowledge graph prevents architectural damage — agents know which zones are high-risk |
 
+### Empirical Verification (graphify AST extraction on frankensqlite)
+
+graphify extracted 31,656 nodes, 74,036 edges, 351 communities, and 1,696 articulation points from 644 Rust files (tree-sitter, 0 LLM tokens). Overlaying with beads issue data:
+
+| Assessment | Crates | Example |
+|---|---|---|
+| HIGH RISK (many nodes, few issues) | fsqlite-harness, fsqlite-core, fsqlite-func, fsqlite-types | harness: 8,897 nodes / 24 issues = 371 nodes/issue |
+| BLIND SPOT (code exists, zero issues) | fsqlite-e2e, fsqlite | e2e: 2,628 nodes, 0 issues |
+| OVER-PLANNED (issues ahead of code) | fsqlite-wasm | 76 nodes / 69 issues — crate barely exists |
+| CRITICAL articulation point, few issues | fsqlite-parser/parser.rs | degree 387, only 5 issues in crate |
+
+Key god node finding: `parse_one()` has 274 edges and `Parser` has 86 edges — both in parser.rs (articulation point, degree 387). But fsqlite-parser has only 5 open issues. bv doesn't recommend any parser work because the task graph shows no blocked dependencies there.
+
+Meanwhile, bv puts 3 WASM issues in its top 10 recommendations. graphify shows fsqlite-wasm has only 76 code nodes — the crate barely exists. bv over-prioritizes it because WASM issues have high PageRank in the task dependency graph, not because the code needs work.
+
+Full data: frankensqlite branch `research/graphify-gap-verification`, file `GAP1_VERIFICATION.md`.
+
 ### Verdict
 
 **Gap 1 is confirmed and deeper than initially theorized.** It is not simply "graphify isn't linked to br." It is:
