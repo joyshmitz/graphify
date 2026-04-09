@@ -1,330 +1,245 @@
-# Cross-Tool Synergy Research
+# Дослідження синергії інструментів
 
-**Branch:** `research/cross-tool-synergy`
-**Date:** 2026-04-09
-**Status:** exploration
-
----
-
-## Context
-
-Five tools that independently cover different phases of AI-agent-assisted development. This document captures the exploration of how they interact, where the gaps are, and what synergies exist.
-
-| Tool | Repo | Language | LOC | Phase |
-|------|------|----------|-----|-------|
-| **graphify** | safishamsi/graphify | Python | ~7.3K | Understanding (code → knowledge graph) |
-| **beads_rust (br)** | local | Rust | ~75K | Planning (dependency-aware issue tracker) |
-| **beads_viewer_rust (bvr)** | local | Rust | ~219K | Prioritization (graph-aware triage engine) |
-| **fast_cmaes** | Dicklesworthstone/fast_cmaes | Rust+PyO3 | — | Optimization (derivative-free parameter tuning) |
-| **cass_memory_system (cm)** | Dicklesworthstone/cass_memory_system | TypeScript/Bun | — | Learning (procedural memory with confidence decay) |
+**Гілка:** `research/cross-tool-synergy`
+**Дата:** 2026-04-09
+**Стан:** розвідка
 
 ---
 
-## Tool Profiles
+## Про що це дослідження
+
+У процесі розробки з AI-агентами використовуються п'ять незалежних інструментів, кожен з яких закриває одну фазу робочого циклу. Ми досліджуємо, як вони можуть працювати разом, де між ними виникають розриви, і що можна покращити.
+
+| Інструмент | Репозиторій | Мова | LOC | Фаза |
+|---|---|---|---|---|
+| **graphify** | safishamsi/graphify | Python | ~7.3K | Розуміння коду (будує knowledge graph) |
+| **beads_rust (br)** | локальний | Rust | ~75K | Планування (трекер з залежностями) |
+| **beads_viewer_rust (bv)** | локальний | Rust | ~219K | Пріоритизація (triage engine з графовими алгоритмами) |
+| **fast_cmaes** | Dicklesworthstone/fast_cmaes | Rust+PyO3 | — | Оптимізація (безградієнтний тюнінг параметрів) |
+| **cass_memory_system (cm)** | Dicklesworthstone/cass_memory_system | TypeScript/Bun | — | Навчання (процедурна пам'ять між сесіями) |
+
+---
+
+## Що робить кожен інструмент
 
 ### graphify
 
-Multimodal knowledge graph builder. Two-pass extraction: deterministic tree-sitter AST (20 languages, 0 tokens) + Claude subagents for docs/images/papers. Leiden community detection. Interactive HTML visualization (vis.js). SHA256 cache for incremental rebuilds. Integrates as `/graphify` skill across 7 platforms (Claude Code, Codex, OpenCode, OpenClaw, Factory Droid, Trae, Trae CN).
+Будує knowledge graph з будь-якої папки: коду, документів, зображень, PDF-статей. Працює у два проходи. Спочатку tree-sitter парсить AST для 20 мов програмування без жодного LLM-токена. Потім Claude-субагенти паралельно обробляють документи та зображення, витягуючи концепції і зв'язки. Результати об'єднуються в граф NetworkX, кластеризуються алгоритмом Leiden, і експортуються як інтерактивний HTML (vis.js), JSON для запитів, Obsidian-вікі і текстовий звіт.
 
-**Core pipeline:**
-```
-detect → extract (AST + LLM) → build (NetworkX) → cluster (Leiden) → analyze → report + export
-```
-
-**Key outputs:** graph.json, graph.html, GRAPH_REPORT.md, Obsidian wiki, cache/
+Кожне ребро графу позначається рівнем достовірності: EXTRACTED (знайдено безпосередньо в коді), INFERRED (виведено з контексту, з числовим score), або AMBIGUOUS (позначено для ручної перевірки).
 
 ### beads_rust (br)
 
-Local-first, dependency-aware task tracker. SQLite primary storage + JSONL for git-friendly collaboration. Non-invasive (zero automatic git operations). 35+ CLI subcommands. Agent-first: every command supports `--json`. Hash-based short IDs (e.g., `bd-7f3a2c`). Append-only event audit log.
+Локальний трекер задач із підтримкою залежностей між ними. Зберігає дані у SQLite, а для синхронізації через git експортує в JSONL. Принципово не виконує жодних git-команд автоматично. Має 35+ CLI-команд, кожна підтримує `--json` для роботи з агентами. Кожна мутація записується в append-only журнал подій.
 
-**Key data:** Issues (status, priority P0-P4, type, labels) + Dependencies (blocks, parent-child, conditional-blocks, waits-for, related)
+### beads_viewer_rust (bv)
 
-### beads_viewer_rust (bvr)
+Аналітичний шар над даними br. Будує повний граф залежностей у пам'яті (petgraph DiGraph) і запускає на ньому дев'ять алгоритмів: PageRank, Betweenness Centrality, Eigenvector, HITS, Kosaraju SCC (виявлення циклів), Critical Path, K-Core, Articulation Points, Slack. На основі цих метрик обчислює ImpactScore з восьми зважених компонентів і видає ранжований список рекомендацій.
 
-Read-only analytics layer over br data. Builds in-memory petgraph DiGraph. 9 graph algorithms. 8-component transparent ImpactScore with weight presets. 39 `--robot-*` commands. 12-mode interactive TUI. Static HTML+SQLite dashboard export. TOON format output (60% smaller than JSON).
-
-**Algorithms:** PageRank, Betweenness, Eigenvector, HITS, Kosaraju SCC, Critical Path, K-Core, Articulation Points, Slack
-
-**Scoring:**
-```
-pagerank(0.22) + betweenness(0.20) + blocker_ratio(0.13) + 
-time_to_impact(0.10) + priority(0.10) + urgency(0.10) + 
-risk(0.10) + staleness(0.05) = 1.0
-```
+Ваги ImpactScore: pagerank (0.22) + betweenness (0.20) + blocker_ratio (0.13) + time_to_impact (0.10) + priority (0.10) + urgency (0.10) + risk (0.10) + staleness (0.05).
 
 ### fast_cmaes
 
-Rust CMA-ES with Python bindings. Derivative-free optimizer for continuous parameters in black-box/noisy/non-differentiable objectives. SIMD (AVX 3-4x), Rayon parallelism, lazy eigen decomposition (5-10x fewer O(n³) calls). Ask-tell pattern. Box constraints + mirroring + rejection + repair + penalty pipeline.
+Реалізація алгоритму CMA-ES (Covariance Matrix Adaptation Evolution Strategy) на Rust з Python-біндінгами через PyO3. Знаходить оптимум функцій, для яких неможливо обчислити градієнт: зашумлені, недиференційовані, з локальними мінімумами. Прискорений SIMD (3-4x на dot product) та Rayon (лінійне масштабування по ядрах).
 
 ### cass_memory_system (cm)
 
-Three-layer cognitive architecture for AI agent memory:
-- **Episodic:** raw session logs (JSONL)
-- **Working:** diary summaries
-- **Procedural:** playbook bullets with scored rules
+Трирівнева когнітивна архітектура для пам'яті AI-агентів. Епізодична пам'ять зберігає сирі логи сесій у JSONL. Робоча пам'ять формує структуровані підсумки. Процедурна пам'ять дистилює все у playbook-правила з оцінкою достовірності. Достовірність має 90-денний період напіврозпаду, і один негативний відгук важить учетверо більше позитивного. Правила, що накопичили багато негативних відгуків, автоматично інвертуються в анти-патерни.
 
-90-day confidence half-life. 4x harmful multiplier. Maturity progression: candidate → established → proven. Anti-pattern inversion. Cross-agent knowledge transfer (Claude Code ↔ Cursor ↔ Codex).
+Ключова властивість: знання передаються між різними агентами. Те, що Claude Code дізнався в одній сесії, стає доступним для Cursor або Codex у наступній.
 
 ---
 
-## The Workflow Cycle
+## Робочий цикл і розриви між фазами
 
 ```
-Understand → Plan → Prioritize → Execute → Learn
- graphify      br       bvr       agents    CASS
-                                              │
-              ◄────────── feedback loop ◄─────┘
+Розуміння → Планування → Пріоритизація → Виконання → Навчання
+ graphify       br            bv           агенти      CASS
+                                                        │
+               ◄──────── зворотний зв'язок ◄────────────┘
 ```
 
-Each tool covers one phase. The gaps are in the transitions.
+Кожен інструмент відповідає за свою фазу. Проблеми виникають на переходах між ними.
+
+### Розрив 1: Розуміння не з'єднане з плануванням
+
+graphify будує knowledge graph коду, а br зберігає задачі. Між цими двома системами немає зв'язку. Коли агент бере задачу, він не знає, що вона зачіпає вузол графу з великою кількістю зв'язків або критичну частину архітектури. Ця інформація існує, але в іншому інструменті.
+
+### Розрив 2: Пріоритизація не враховує архітектурний контекст
+
+bv ранжує задачі на основі графу залежностей між ними: PageRank, betweenness, blocker ratio. Але bv нічого не знає про код, який стоїть за кожною задачею: скільки там рядків, скільки залежних модулів, чи є це articulation point в архітектурі. Архітектурний ризик і пріоритет задачі живуть у різних системах.
+
+### Розрив 3: Після виконання ніхто не вчиться
+
+Агент закрив задачу. Код змінився. Але graphify graph залишається старим (треба перезапускати вручну), ваги bv ніхто не калібрує під реальні результати, і наступний агент починає з нуля без знання про те, що працювало, а що ні. CASS закриває цей розрив: він записує результати сесій, дистилює їх у правила і передає наступним агентам.
 
 ---
 
-## Identified Gaps
+## Роль CASS у замиканні циклу
 
-### Gap 1: Understanding ↛ Planning
+CASS не просто закриває третій розрив. Він повертає знання назад у кожну фазу:
 
-graphify builds a knowledge graph of the codebase. br has issues. There is no link between them. When an agent creates "refactor auth module" — it doesn't know auth is a god node with 23 connections across 4 communities. The information exists, but in a different tool.
-
-### Gap 2: Prioritization ↛ Architectural Context
-
-bvr recommends "do bd-42 first" based on task graph metrics. But bvr doesn't know that bd-42 touches a module with lowest cohesion and 6 ambiguous edges — a risky zone in the knowledge graph. Architectural risk and task priority live in separate worlds.
-
-### Gap 3: Execution ↛ Learning (closed by CASS)
-
-Agent closes an issue. Code changed. But without CASS:
-- graphify graph is stale (manual re-run needed)
-- bvr weights are never calibrated against real outcomes
-- No one knows if bvr's recommendation was good
-- Next agent starts from zero
-
-CASS closes this: outcomes → playbook bullets → context retrieval → better decisions.
-
----
-
-## CASS as the Feedback Backbone
-
-CASS doesn't just close Gap 3 — it feeds back into every phase:
-
-| CASS remembers... | Feeds back to... |
+| CASS пам'ятає... | Повертає до... |
 |---|---|
-| "auth module always breaks during refactor" | graphify: raise risk score for auth community |
-| "bvr recommended bd-42 first, but it took 3x longer" | fast_cmaes: fitness data for weight calibration |
-| "cross-file changes in cluster.py caused regressions" | bvr: additional risk signal during triage |
-| "Claude handles Rust better, Codex handles Python" | planning: agent routing by language |
+| Які модулі регулярно ламаються при рефакторингу | graphify: підвищити risk score для відповідної community |
+| Які рекомендації bv виявились хибними | fast_cmaes: дані для калібрування ваг |
+| Які зміни між файлами спричиняли регресії | bv: додатковий сигнал ризику при triage |
+| Який агент краще справляється з якою мовою | планування: маршрутизація задач по агентах |
 
-### CASS → fast_cmaes → bvr loop
-
-```
-CASS outcomes (success/harmful marks)
-        ↓
-fitness function: do bvr recommendations match actual outcomes?
-        ↓
-fast_cmaes tunes bvr weights (8 continuous params, sum=1)
-        ↓
-bvr gives better recommendations
-        ↓
-CASS records new outcomes
-        ↓
-cycle closes
-```
-
-This is the most concrete integration point: CASS provides the historical data that fast_cmaes needs as a fitness function to optimize bvr's ImpactScore weights.
+Найконкретніша точка інтеграції виглядає так: CASS накопичує дані про результати (outcome marks на playbook-правилах). Ці дані стають fitness function для fast_cmaes, який оптимізує вісім ваг ImpactScore у bv. bv починає давати кращі рекомендації. CASS записує нові результати. Цикл замикається.
 
 ---
 
-## Synergy Directions
+## Три напрямки інтеграції
 
-### Direction A: Enrich existing tools independently
+### Напрямок A: покращити кожен інструмент окремо
 
-Each tool improves on its own, no new tool needed.
+graphify отримує алгоритми з bv (PageRank, SCC, critical path через наявний NetworkX). bv отримує архітектурний контекст з graphify (вузли з великою кількістю зв'язків, cohesion, communities). fast_cmaes тюнить ваги обох інструментів. CASS постачає історичні дані для всіх.
 
-- graphify gets algorithms from bvr (PageRank, SCC, critical path via NetworkX)
-- bvr gets architectural context from graphify (god nodes, cohesion, communities)
-- fast_cmaes tunes weights of both via `graphify tune` / `bvr --auto-tune`
-- CASS feeds historical data to all
+Перевага: мінімальний обсяг змін, кожен інструмент залишається незалежним. Недолік: зв'язок між ними залишається ручним.
 
-**Pro:** minimal scope, each tool stays independent
-**Con:** inter-tool connection remains manual
+### Напрямок B: створити шар інтеграції
 
-### Direction B: Integration layer (thin bridge)
+Не новий інструмент, а спільний формат для накладання двох графів. graphify-out/graph.json і .beads/issues.jsonl зустрічаються в overlay, який зв'язує задачі з кодовими вузлами за згадками файлів у тексті задач.
 
-Not a new tool, but a contract between existing ones. Shared format for overlaying two graphs.
+Правила overlay: задача згадує шлях до файлу, тому з'являється ребро до відповідного вузла graphify. Community з великою кількістю задач стає "гарячою зоною". Вузол з великою кількістю зв'язків без жодної задачі стає "непокритим ризиком".
 
-```
-graphify-out/graph.json  ──┐
-                           ├──→  overlay  ──→ enriched triage
-.beads/issues.jsonl     ──┘
-```
+Перевага: з'єднує розуміння з плануванням без зміни інструментів. Недолік: ще один артефакт для підтримки.
 
-Overlay rules:
-- Issue mentions file path → edge to corresponding graphify node
-- Issue description contains keyword → semantic match to graphify community
-- graphify community with many issues = "hot zone"
-- graphify god node with zero issues = "unmonitored risk"
+### Напрямок C: новий мета-інструмент
 
-**Pro:** connects understanding with planning, both tools unchanged
-**Con:** another artifact to maintain
+Інструмент, який читає вихідні дані обох графів і відповідає на питання, які жоден з них не може відповісти самостійно. Наприклад: "який blast radius у цієї задачі?", "де найбільший ризик?", "чи конфліктують ці дві задачі?", "що не покрито задачами?".
 
-### Direction C: New tool — "project lens"
-
-Meta-tool that reads output of both graphs and answers questions neither can answer alone.
-
-| Question | graphify alone | br/bvr alone | Combined |
-|---|---|---|---|
-| Blast radius of this issue? | — | Knows blockers | Blockers + which modules + their connections |
-| Where is the biggest risk? | Knows low-cohesion zones | Knows stale issues | Low-cohesion + stale = highest risk |
-| Do these two issues conflict? | — | Knows dep conflicts | + knows both touch same community |
-| What's not covered by issues? | — | — | God nodes without issues = blind spots |
-| Planning quality? | — | — | % of architecture covered by issues |
-
-**Pro:** closes all three gaps, new quality of information
-**Con:** new tool = new maintenance burden
+Перевага: закриває всі три розриви, нова якість інформації. Недолік: новий інструмент потребує підтримки.
 
 ---
 
-## graphify: Identified Weaknesses
+## Виявлені слабкості graphify
 
-Found during code analysis of extract.py, build.py, cluster.py, analyze.py.
+Знайдені під час аналізу вихідного коду extract.py, build.py, cluster.py, analyze.py.
 
-| Problem | Location | Impact |
-|---------|----------|--------|
-| God nodes = degree only | analyze.py:39-58 | Misses bridging bottlenecks |
-| Betweenness O(V³), computed twice without cache | analyze.py:357,263 | Slow on >1K nodes |
-| Surprise score — sum of bonuses, no normalization | analyze.py:134-187 | Large graphs overshadow small |
-| Cross-file resolution — Python only | extract.py:2039-2169 | 19 languages without cross-file edges |
-| Hyperedges stored but never analyzed | build.py:49-51 | Dead data |
-| Graph is undirected, direction in _src/_tgt attrs | build.py:43-48 | Loses directed analysis |
-| No cycle detection | — | Can't see circular dependencies |
-| Hard-coded thresholds (peripheral=2, hub=5) | analyze.py:179-185 | Not adaptive to graph size |
-| Call graph — direct calls only | extract.py:844-969 | Misses dynamic dispatch |
-| Concept node detection — fragile heuristic | analyze.py:93-109 | source_file dot check is brittle |
-
-### Proposed graphify improvements (from bvr algorithms)
-
-| # | What | How | Effort | Value |
-|---|---|---|---|---|
-| 1 | Directed graph | nx.DiGraph() instead of nx.Graph() | Medium | High |
-| 2 | PageRank god nodes | nx.pagerank() replaces degree() | Low | High |
-| 3 | Cycle detection | nx.strongly_connected_components() | Low | Medium |
-| 4 | Cache betweenness | Compute once, pass as parameter | Low | Medium |
-| 5 | Normalized surprise | Divide score by log(graph_size) | Low | Medium |
-| 6 | Cross-file for Go/Rust/TS | Extend _resolve_cross_file_imports | High | High |
-| 7 | Articulation points | nx.articulation_points() → report section | Low | Medium |
-| 8 | Adaptive thresholds | percentile(degrees, 25/75) | Low | Low |
-| 9 | TOON output | --format toon for agent-friendly output | Medium | Medium |
-
----
-
-## fast_cmaes: Where It Fits
-
-CMA-ES optimizes continuous parameters without gradients. Relevant targets:
-
-| Target | Params | Fitness function | Data source |
-|---|---|---|---|
-| bvr ImpactScore weights | 8 (sum=1) | Rank correlation: triage order vs actual closure | CASS outcomes + br events |
-| graphify surprise score | 6 bonuses | User relevance of flagged connections | CASS feedback or implicit (Claude usage) |
-| graphify Leiden params | 3 (resolution, max_frac, min_split) | Modularity / avg cohesion | Graph-internal metric |
-| graphify NodeImportanceScore | 7 (if implemented) | Cross-project stability | Multi-repo benchmark |
-| vis.js physics | 5 layout params | Edge crossing minimization | Graph-internal metric |
-
-**Key dependency:** most fitness functions require CASS outcome data. Without historical feedback, only graph-internal metrics (modularity, cohesion) are available for optimization.
-
----
-
-## Three Knowledge Layers
-
-```
-graphify  = "what exists"     (structure now)
-br + bvr  = "what to do"     (tasks and priorities)
-CASS      = "what happened"  (experience and patterns)
-fast_cmaes = "how to improve" (optimization from experience)
-```
-
-No single tool provides the full picture. Together they form a closed loop:
-**understand → plan → act → learn → improve → understand better**
-
----
-
-## Open Questions
-
-1. **Is Direction B (overlay) enough, or does Direction C (project lens) justify a new tool?**
-   The answer depends on whether the overlay data produces questions that are asked frequently enough to warrant dedicated tooling.
-
-2. **What is the minimum viable feedback loop?**
-   CASS outcomes → bvr weight tuning via fast_cmaes is the simplest closed loop. Does it produce measurably better triage recommendations?
-
-3. **Should graphify consume .beads data directly?**
-   Adding issues as nodes in the knowledge graph connects "what exists" with "what needs work". But it mixes two very different data lifecycles (static code vs dynamic tasks).
-
-4. **Is cross-agent memory (CASS) more valuable than cross-tool integration?**
-   An agent that remembers past sessions may produce more value than tools that share data — because the agent is the one making decisions.
-
-5. **Where does the human fit?**
-   All five tools are agent-friendly (--json, --robot-*, MCP). But the cycle Understand → Plan → Prioritize → Execute → Learn can run without human intervention. Is that desirable? Where should the human checkpoint be?
-
----
-
-## Gap 1 Verification: frankensqlite Case Study
-
-**Test subject:** `/Users/sd/projects/frankensqlite/` — ground-up Rust reimplementation of SQLite with MVCC concurrent writers. 750K LOC, 26 crates, 644 .rs files. 1757 beads issues (314 open, 1398 closed, 277 blocked). No graphify graph exists.
-
-### Six Sources of Knowledge, Six Separate Views
-
-| Source | What it knows | What it doesn't know |
+| Проблема | Розташування | Наслідок |
 |---|---|---|
-| **br (1757 issues)** | Task dependencies, priorities, blockers, statuses | Which code modules an issue touches, architectural risk |
-| **bv (triage)** | PageRank/betweenness in task graph, ImpactScore | connection.rs = 88K LOC, fsqlite-mvcc = 65K LOC, crate dep depth |
-| **AGENTS.md (842 lines)** | Workflow rules, toolchain, trauma rules, multi-agent protocol | Doesn't codify architectural risk zones or god nodes |
-| **COMPREHENSIVE_SPEC (18K lines)** | Full specification: MVCC, RaptorQ, SSI, ECS, all subsystems | Not linked to issues — "what's specified" vs "what's built" vs "what's tracked" |
-| **tasks.md (phases 1-9)** | Original phased plan with checkboxes | Stale — says Phase 2 "IN PROGRESS" but code is at Phase 6+ |
-| **Code (750K LOC)** | Actual state — what compiles and passes tests | No context for "why" or "what's left" |
+| God nodes визначаються тільки за кількістю зв'язків | analyze.py:39-58 | Пропускає bridging bottlenecks |
+| Betweenness centrality O(V³), обчислюється двічі без кешу | analyze.py:357,263 | Повільно на графах з >1K вузлів |
+| Surprise score сумує бонуси без нормалізації | analyze.py:134-187 | На великих графах score непорівнюваний з малими |
+| Cross-file resolution працює лише для Python | extract.py:2039-2169 | 19 мов без cross-file зв'язків |
+| Hyperedges зберігаються, але ніде не аналізуються | build.py:49-51 | Мертві дані |
+| Граф ненапрямлений, напрямок зберігається в атрибутах _src/_tgt | build.py:43-48 | Неможливо використовувати directed-алгоритми |
+| Немає виявлення циклів | — | Не бачить circular dependencies |
+| Пороги peripheral=2, hub=5 захардкоджені | analyze.py:179-185 | Не адаптуються до розміру графу |
+| Call graph ловить тільки прямі виклики | extract.py:844-969 | Пропускає dynamic dispatch |
+| Визначення concept nodes через наявність крапки в source_file | analyze.py:93-109 | Ненадійна евристика |
 
-No single source provides the full picture. Each answers a different question but none answers: "what is architecturally important, how well is it covered by issues, and what's the risk?"
+### Покращення graphify на основі алгоритмів bv
 
-### Finding 1: Issue-to-Architecture Mapping is Absent
+| # | Що | Як | Зусилля | Цінність |
+|---|---|---|---|---|
+| 1 | Напрямлений граф | nx.DiGraph() замість nx.Graph() | Середнє | Висока |
+| 2 | PageRank для god nodes | nx.pagerank() замість degree() | Низьке | Висока |
+| 3 | Виявлення циклів | nx.strongly_connected_components() | Низьке | Середня |
+| 4 | Кеш betweenness | Обчислити один раз, передати як параметр | Низьке | Середня |
+| 5 | Нормалізований surprise | Ділити score на log(розмір_графу) | Низьке | Середня |
+| 6 | Cross-file для Go, Rust, TS | Розширити _resolve_cross_file_imports | Високе | Висока |
+| 7 | Articulation points | nx.articulation_points(), нова секція в звіті | Низьке | Середня |
+| 8 | Адаптивні пороги | percentile(degrees, 25/75) замість магічних чисел | Низьке | Низька |
+| 9 | TOON формат | --format toon для агент-орієнтованого виводу | Середнє | Середня |
 
-Open issues by crate mention (text search in title + description, 314 open issues):
+---
 
-| Crate | LOC | Open issues mentioning it | LOC per issue |
+## Де вписується fast_cmaes
+
+CMA-ES оптимізує неперервні параметри без градієнтів. У нашому контексті є п'ять конкретних цілей:
+
+| Ціль | Параметри | Fitness function | Джерело даних |
 |---|---|---|---|
-| fsqlite-core | 132K | 58 | 2,286 |
-| fsqlite-harness | 106K | 24 | 4,417 |
-| fsqlite-mvcc | 65K | 50 | 1,300 |
-| fsqlite-e2e | 54K | 0 | ∞ |
-| fsqlite-vdbe | 45K | 24 | 1,875 |
-| fsqlite-pager | 21K | 21 | 1,000 |
-| fsqlite-wal | 19K | 34 | 559 |
-| fsqlite-types | 17K | 8 | 2,125 |
-| fsqlite-btree | 15K | 6 | 2,500 |
-| fsqlite-parser | 15K | 5 | 3,000 |
-| fsqlite-wasm | — | 69 | over-planned (crate doesn't exist yet) |
+| Ваги ImpactScore у bv | 8 (сума=1) | Кореляція між порядком рекомендацій і фактичним порядком закриття | CASS outcomes + br events |
+| Бонуси surprise score в graphify | 6 | Релевантність виявлених зв'язків | CASS feedback або implicit tracking |
+| Параметри Leiden у graphify | 3 (resolution, max_frac, min_split) | Модулярність або середня cohesion | Внутрішня метрика графу |
+| NodeImportanceScore (якщо буде реалізований) | 7 | Стабільність на різних проєктах | Крос-проєктний benchmark |
+| Фізика vis.js layout | 5 | Мінімізація перетинів ребер | Внутрішня метрика графу |
 
-82 of 314 open issues (26%) mention no crate at all. bv ranks these alongside crate-specific issues without knowing which code they affect.
+Для більшості з цих fitness functions потрібні історичні дані з CASS. Без зворотного зв'язку від реальних результатів можна оптимізувати лише внутрішні метрики графу (модулярність, cohesion).
 
-### Finding 2: connection.rs (88K LOC) is Invisible to Task Graph
+---
 
-The single largest file in the project — `crates/fsqlite-core/src/connection.rs` at 88,683 lines — is larger than the entire graphify codebase (7.3K LOC). It contains the parse cache, compiled cache, concurrent_mode_default, and the full DDL/DML executor.
+## Три шари знань
 
-bv's top recommendation `bd-db300.1.3` ("automate perf") scores 0.47. PERFORMANCE_OPTIMIZATION_PLAN.md specifically identifies `connection.rs ~lines 1448-1456` and `~lines 2267-2383` as bottleneck locations. But bv doesn't know this. The performance plan and the triage engine live in separate worlds.
+```
+graphify   = "що існує"       (поточна структура коду)
+br + bv    = "що робити"      (задачі і їх пріоритети)
+CASS       = "що було"        (досвід і закономірності)
+fast_cmaes = "як покращити"   (оптимізація на основі досвіду)
+```
 
-### Finding 3: AGENTS.md Trauma Rules = Manual CASS
+Жоден інструмент окремо не дає повної картини. Разом вони утворюють замкнутий цикл: зрозуміти, спланувати, зробити, навчитися, покращити, зрозуміти краще.
 
-AGENTS.md lines 263-285 contain a hand-written trauma rule:
+---
 
-> "On Feb 10 2026, an agent set concurrent_mode_default to false and implemented serialized file locking in MemoryVfs, completely defeating the project's core innovation."
+## Відкриті питання
 
-This is exactly what CASS procedural memory does — recording a harmful pattern with context. But AGENTS.md does this manually for one incident. It doesn't scale to 750K LOC across 26 crates. CASS would systematically capture, score, and surface such patterns with confidence decay.
+1. Чи достатньо overlay (напрямок B), чи потрібен окремий інструмент (напрямок C)? Відповідь залежить від того, наскільки часто виникають питання, які потребують даних з обох графів одночасно.
 
-### Finding 4: Spec→Issues→Code→Tests — No Traceability Chain
+2. Який мінімально працездатний зворотний зв'язок? Ланцюжок "CASS outcomes → fast_cmaes → bv weights" виглядає найпростішим замкнутим циклом. Але чи дасть він вимірювано кращі рекомендації?
 
-BEAD_AUDIT_REPORT.md shows 149 beads mapped to spec sections, with overlap issues in §4 (Asupersync) and §5.10 (Write Merging). UNIT_INVARIANT_MATRIX.md shows 5,016 tests with P0 gaps in "MVCC concurrent tests, RaptorQ repair, Pager integration."
+3. Чи варто graphify поглинати дані .beads напряму? Додавання задач як вузлів у knowledge graph з'єднує "що є" з "що треба робити", але змішує дуже різні життєві цикли даних: статичний код і динамічні задачі.
 
-But nobody tracks the full chain: spec section X → issue bd-YYY → crate fsqlite-Z → file F.rs → tests T1,T2. Each link is tracked separately.
+4. Що цінніше: пам'ять між агентами (CASS) чи інтеграція між інструментами? Агент, який пам'ятає минулі сесії, можливо, корисніший за інструменти, які діляться даними, тому що саме агент приймає рішення.
 
-### Finding 5: Crate Dependency Depth Amplifies Risk
+5. Де у цьому циклі знаходиться людина? Усі п'ять інструментів мають агент-орієнтовані інтерфейси (--json, --robot-*, MCP). Цикл розуміння-планування-виконання-навчання технічно може працювати без людини. Чи це бажано, і де повинна бути контрольна точка?
 
-PROPOSED_ARCHITECTURE.md documents the dependency tree:
+---
+
+## Верифікація розриву 1 на проєкті frankensqlite
+
+**Об'єкт дослідження:** frankensqlite, повна реімплементація SQLite на Rust з MVCC concurrent writers. 750 тисяч рядків коду, 26 crates, 644 файли .rs. У beads-трекері 1757 задач (314 відкритих, 1398 закритих, 277 заблокованих). Жодного graphify-графу для цього проєкту не існувало.
+
+### Шість джерел знань, шість окремих поглядів
+
+Для frankensqlite існує шість джерел інформації, і кожне бачить лише свій фрагмент:
+
+**br** (1757 задач) знає про залежності між задачами, пріоритети, блокери і статуси, але не знає, яку частину коду зачіпає кожна задача.
+
+**bv** (triage engine) обчислює PageRank і betweenness у графі задач, але не знає, що connection.rs містить 88 тисяч рядків, а fsqlite-mvcc складається з 65 тисяч рядків коду.
+
+**AGENTS.md** (842 рядки) зберігає правила роботи, вимоги до toolchain, протоколи multi-agent координації і одне trauma-правило після конкретного інциденту. Але він не кодифікує зони архітектурного ризику.
+
+**COMPREHENSIVE_SPEC** (18 тисяч рядків) описує повну специфікацію системи: MVCC, RaptorQ, SSI, ECS. Але специфікація не прив'язана до задач, тому незрозуміло, що з описаного вже реалізовано, а що ні.
+
+**tasks.md** (фази 1-9) містить початковий план з чекбоксами. Phase 2 позначена як "IN PROGRESS", хоча код вже давно перейшов на Phase 6+. Документ застарілий.
+
+**Код** (750K LOC) показує, що реально скомпільовано і проходить тести. Але без контексту "навіщо" і "що залишилось" сам по собі він не дає відповіді на питання планування.
+
+Жодне з цих шести джерел не відповідає на запитання: "що в архітектурі є найважливішим, наскільки добре це покрито задачами, і який ризик?"
+
+### Знахідка 1: зв'язок задач з архітектурою відсутній
+
+Ми перевірили, наскільки часто відкриті задачі згадують конкретні crates у своєму тексті (повнотекстовий пошук у заголовках і описах). З 314 відкритих задач 82 (26%) не згадують жодного crate взагалі. bv ранжує їх поруч із конкретними задачами, не знаючи, якого коду вони стосуються.
+
+Найбільше задач стосуються fsqlite-wasm (69 задач), хоча цей crate містить лише 76 кодових вузлів. Водночас fsqlite-parser, де знаходяться критичні вузли parse_one() і Parser, має лише 5 відкритих задач.
+
+### Знахідка 2: connection.rs невидимий для графу задач
+
+Найбільший файл проєкту, crates/fsqlite-core/src/connection.rs, містить 88 683 рядки. Це більше, ніж увесь graphify (7.3K LOC). У цьому файлі знаходяться parse cache, compiled cache, прапорець concurrent_mode_default і повний DDL/DML executor.
+
+Найвища рекомендація bv, задача bd-db300.1.3 ("automate perf, strace, hyperfine"), отримує score 0.47. Окремий документ PERFORMANCE_OPTIMIZATION_PLAN.md називає саме connection.rs (рядки 1448-1456 і 2267-2383) як ключове місце bottleneck. Але bv не має доступу до цього документу, а в тексті задачі немає посилання на конкретний файл. Перформанс-план і triage-движок живуть в окремих світах.
+
+### Знахідка 3: trauma-правила в AGENTS.md працюють як ручний CASS
+
+В AGENTS.md (рядки 263-285) записано правило, народжене з конкретного інциденту: 10 лютого 2026 року агент встановив concurrent_mode_default у false і реалізував серіалізований file locking у MemoryVfs, повністю знищивши ключову інновацію проєкту.
+
+За своєю суттю це те саме, що робить CASS: запис шкідливого патерну з контекстом, причиною і наслідками. Різниця у масштабі. AGENTS.md зберігає один інцидент, записаний вручну. CASS робив би це систематично для всього проєкту, з автоматичним зниженням достовірності старих правил і крос-агентним поширенням.
+
+### Знахідка 4: немає наскрізного ланцюга відстеження
+
+BEAD_AUDIT_REPORT.md показує 149 задач, зіставлених з розділами специфікації, з overlap-проблемами у §4 (Asupersync) і §5.10 (Write Merging). UNIT_INVARIANT_MATRIX.md фіксує 5016 тестів з P0-прогалинами в "MVCC concurrent tests, RaptorQ repair, Pager integration".
+
+Але ніхто не відстежує повний ланцюг: розділ специфікації X → задача bd-YYY → crate fsqlite-Z → файл F.rs → тести T1, T2. Кожна ланка відстежується окремо.
+
+### Знахідка 5: глибина залежностей crates посилює ризик
+
+PROPOSED_ARCHITECTURE.md документує дерево залежностей між crates:
+
 ```
 fsqlite-core → vdbe → btree → pager → vfs → types
                                              → error
@@ -333,53 +248,57 @@ fsqlite-core → vdbe → btree → pager → vfs → types
              → parser → ast → types
 ```
 
-A change in fsqlite-types propagates through the entire stack. 8 open issues mention fsqlite-types — none is tagged as "high blast radius." bv can't compute this because it only sees task-level dependencies (issue blocks issue), not code-level dependencies (crate depends on crate).
+Зміна в fsqlite-types поширюється через увесь стек. 8 відкритих задач згадують fsqlite-types, але жодна з них не позначена як така, що має великий blast radius. bv не може обчислити цю інформацію, бо бачить лише залежності між задачами (задача блокує задачу), а не залежності між модулями коду (crate залежить від crate).
 
-### Finding 6: Multi-Agent Risk Without Architectural Awareness
+### Знахідка 6: багатоагентна робота без архітектурного контексту
 
-AGENTS.md line 835: "potentially dozen of other agents working on the project at the same time." Agent Mail provides file reservations but not architectural awareness. An agent reserving `crates/fsqlite-types/src/lib.rs` doesn't know it affects every other crate. Multiple agents may have issues touching connection.rs (88K LOC) simultaneously without architectural context.
+AGENTS.md (рядок 835) прямо згадує, що над проєктом одночасно може працювати десяток агентів. Agent Mail надає механізм file reservations для запобігання конфліктам при редагуванні, але не дає архітектурного контексту. Агент, який резервує файл crates/fsqlite-types/src/lib.rs, не знає, що цей файл впливає на кожен інший crate у проєкті. Кілька агентів одночасно можуть мати задачі, що стосуються connection.rs (88K LOC), без жодного уявлення про архітектурний контекст цього файлу.
 
-### What graphify Would Provide Here
+### Що б дав graphify у цій ситуації
 
-| Scenario | Without graphify | With graphify overlay |
+Ми перевірили це на практиці. Коли агент бере задачу bd-db300.5.1 (per-core transaction pipeline), bv повідомляє score 0.30 і жодного контексту про файли чи модулі. Якби існував overlay graphify, агент бачив би, що fsqlite-core містить 6084 вузли у графі, а connection.rs є articulation point із degree 2127. Наразі ця інформація для bv недоступна.
+
+Коли агент бере задачу bd-35lpy (WASM bindgen API surface), bv дає score 0.31, майже такий самий. Але graphify показує, що fsqlite-wasm має лише 76 code nodes, це найменший crate за розміром коду. bv оцінює ці задачі однаково, хоча їхній архітектурний контекст радикально різний.
+
+### Емпірична верифікація
+
+Ми запустили graphify на frankensqlite/crates (tree-sitter для Rust, 0 LLM-токенів) і отримали 31 656 вузлів, 74 036 ребер, 351 community і 1696 articulation points з 644 файлів.
+
+Потім наклали ці дані на задачі з beads (повнотекстовий пошук у заголовках і описах):
+
+| Категорія | Crates | Приклад |
 |---|---|---|
-| Agent takes `bd-db300.5.1` (per-core txn pipeline) | bv says score=0.30. No file/crate context | graphify data shows: fsqlite-core has 6,084 nodes, connection.rs is articulation point (degree 2,127). This context is currently unavailable to bv |
-| Agent takes `bd-35lpy` (WASM bindgen API) | bv says score=0.31 | graphify data shows: fsqlite-wasm has 76 nodes (smallest crate by code). bv scores it similarly to issues in larger crates |
-| New agent starts session | Reads 842-line AGENTS.md | graphify GRAPH_REPORT.md would show god nodes and communities, but doesn't exist for this project yet |
+| Великий код, мало задач | fsqlite-harness, fsqlite-core, fsqlite-func | harness: 8897 вузлів, 24 задачі (371 вузол на задачу) |
+| Код є, задач немає | fsqlite, fsqlite-ext-json, fsqlite-ext-fts5, fsqlite-ext-icu, fsqlite-ext-misc, fsqlite-ext-fts3 | fsqlite: 757 вузлів, 0 задач |
+| Недостатнє покриття | fsqlite-types (1068/8), fsqlite-parser (740/5), fsqlite-btree (680/6) | parser.rs є articulation point із degree 387 |
+| Задач більше, ніж коду | fsqlite-wasm | 76 вузлів, 69 задач |
 
-### Empirical Verification (graphify AST extraction on frankensqlite)
+Найважливіша знахідка стосується парсера. Функція parse_one() має 274 ребра, а структура Parser має 86 ребер. Обидва вузли знаходяться у файлі parser.rs, який є articulation point із degree 387. Але в усьому crate fsqlite-parser лише 5 відкритих задач. bv не рекомендує жодної роботи з парсером, тому що в графі задач парсерні задачі нікого не блокують.
 
-graphify extracted 31,656 nodes, 74,036 edges, 351 communities, and 1,696 articulation points from 644 Rust files (tree-sitter, 0 LLM tokens). Overlaying with beads issue data (full text search in titles + descriptions):
+Водночас bv ставить 3 задачі з WASM у свій top-10 рекомендацій. graphify показує, що fsqlite-wasm має лише 76 code nodes. bv надає їм високий пріоритет через PageRank у графі залежностей задач, а не через реальний стан коду.
 
-| Assessment | Crates | Example |
-|---|---|---|
-| HIGH RISK (many nodes, few issues) | fsqlite-harness, fsqlite-core, fsqlite-func | harness: 8,897 nodes / 24 issues = 371 nodes/issue |
-| BLIND SPOT (code exists, zero issues) | fsqlite, fsqlite-ext-json, fsqlite-ext-fts5, fsqlite-ext-icu, fsqlite-ext-misc, fsqlite-ext-fts3 | fsqlite: 757 nodes, 0 issues |
-| UNDER-TRACKED | fsqlite-types (1,068 nodes / 8 issues), fsqlite-parser (740 / 5), fsqlite-btree (680 / 6) | parser.rs is articulation point with degree 387 |
-| OVER-PLANNED (issues ahead of code) | fsqlite-wasm | 76 nodes / 69 issues — crate barely exists |
+Повні дані зберігаються у гілці `research/graphify-gap-verification` проєкту frankensqlite, файл GAP1_VERIFICATION.md.
 
-Key god node finding: `parse_one()` has 274 edges and `Parser` has 86 edges — both in parser.rs (articulation point, degree 387). But fsqlite-parser has only 5 open issues. bv doesn't recommend any parser work because the task graph shows no blocked dependencies there.
+### Підсумок верифікації
 
-Meanwhile, bv puts 3 WASM issues in its top 10 recommendations. graphify shows fsqlite-wasm has only 76 code nodes — the crate barely exists. bv over-prioritizes it because WASM issues have high PageRank in the task dependency graph, not because the code needs work.
+Розрив 1 підтверджений емпірично і є глибшим, ніж просто "graphify не з'єднаний з br":
 
-Full data: frankensqlite branch `research/graphify-gap-verification`, file `GAP1_VERIFICATION.md`.
+1. Шість джерел знань, і жодне не дає повної картини. Специфікація, задачі, код, тести, перформанс-план і trauma-правила покривають окремі фрагменти.
 
-### Verdict
+2. Архітектурний ризик невидимий для графу задач. bv ранжує задачі без урахування обсягу коду, глибини залежностей crates чи покриття тестами.
 
-**Gap 1 is confirmed and deeper than initially theorized.** It is not simply "graphify isn't linked to br." It is:
+3. Trauma-правила не масштабуються. AGENTS.md вручну фіксує один інцидент. CASS робив би це системно.
 
-1. **Six knowledge sources, none complete** — spec, issues, code, tests, perf plan, and trauma rules each cover a fragment
-2. **Architectural risk is invisible to task graph** — bv ranks issues without LOC, dependency depth, or test coverage data
-3. **Trauma rules don't scale** — AGENTS.md captures one incident manually; CASS would systematize this
-4. **No traceability chain** — spec→issue→crate→file→test links are not tracked end-to-end
-5. **Multi-agent workflows amplify the gap** — 12 agents without architectural awareness multiply the risk of unintended damage
+4. Немає наскрізного ланцюга. Зв'язки "специфікація → задача → crate → файл → тест" відстежуються окремо, ніхто не бачить повну картину.
+
+5. Багатоагентна робота підсилює проблему. Десяток агентів без архітектурного контексту збільшує ризик ненавмисного пошкодження.
 
 ---
 
-## Next Steps (research, not implementation)
+## Наступні кроки дослідження
 
-- [ ] Map concrete data flows: what exact JSON fields would an overlay need from graph.json + issues.jsonl
-- [ ] Evaluate: does CASS already have enough outcome data to serve as fitness function for fast_cmaes?
-- [ ] Prototype: run bvr triage with different weight presets on a real project, compare against actual closure order
-- [ ] Explore: can graphify's GRAPH_REPORT.md be a CASS knowledge source (episodic layer)?
-- [ ] Assess: what would a minimal "project lens" query API look like?
+- [ ] Описати конкретні поля JSON, які потрібні для overlay між graph.json і issues.jsonl
+- [ ] Перевірити, чи є у CASS достатньо outcome-даних, щоб служити fitness function для fast_cmaes
+- [ ] Запустити bv triage з різними weight presets на реальному проєкті і порівняти з фактичним порядком закриття задач
+- [ ] Дослідити, чи може GRAPH_REPORT.md від graphify стати джерелом для епізодичного шару CASS
+- [ ] Оцінити, як виглядав би мінімальний API для "project lens"
