@@ -23,6 +23,19 @@ def _check_skill_version(skill_dst: Path) -> None:
     if installed != __version__:
         print(f"  warning: skill is from graphify {installed}, package is {__version__}. Run 'graphify install' to update.")
 
+
+def _refresh_all_version_stamps() -> None:
+    """After a successful install, update .graphify_version in all other known skill dirs.
+
+    Prevents stale-version warnings from platforms that were installed previously
+    but not explicitly re-installed during this upgrade.
+    """
+    for cfg in _PLATFORM_CONFIG.values():
+        vf = Path.home() / cfg["skill_dst"]
+        vf = vf.parent / ".graphify_version"
+        if vf.exists():
+            vf.write_text(__version__, encoding="utf-8")
+
 _SETTINGS_HOOK = {
     "matcher": "Glob|Grep",
     "hooks": [
@@ -104,7 +117,7 @@ _PLATFORM_CONFIG: dict[str, dict] = {
     },
     "antigravity": {
         "skill_file": "skill.md",
-        "skill_dst": Path(".agent") / "skills" / "graphify" / "SKILL.md",
+        "skill_dst": Path(".agents") / "skills" / "graphify" / "SKILL.md",
         "claude_md": False,
     },
     "windows": {
@@ -156,6 +169,13 @@ def install(platform: str = "claude") -> None:
             claude_md.write_text(_SKILL_REGISTRATION.lstrip(), encoding="utf-8")
             print(f"  CLAUDE.md        ->  created at {claude_md}")
 
+    if platform == "opencode":
+        _install_opencode_plugin(Path("."))
+
+    # Refresh version stamps in all other previously-installed skill dirs so
+    # stale-version warnings don't fire for platforms not explicitly re-installed.
+    _refresh_all_version_stamps()
+
     print()
     print("Done. Open your AI coding assistant and type:")
     print()
@@ -171,7 +191,8 @@ This project has a graphify knowledge graph at graphify-out/.
 Rules:
 - Before answering architecture or codebase questions, read graphify-out/GRAPH_REPORT.md for god nodes and community structure
 - If graphify-out/wiki/index.md exists, navigate it instead of reading raw files
-- After modifying code files in this session, run `python3 -c "from graphify.watch import _rebuild_code; from pathlib import Path; _rebuild_code(Path('.'))"` to keep the graph current
+- For cross-module "how does X relate to Y" questions, prefer `graphify query "<question>"`, `graphify path "<A>" "<B>"`, or `graphify explain "<concept>"` over grep — these traverse the graph's EXTRACTED + INFERRED edges instead of scanning files
+- After modifying code files in this session, run `graphify update .` to keep the graph current (AST-only, no API cost)
 """
 
 _CLAUDE_MD_MARKER = "## graphify"
@@ -186,6 +207,7 @@ This project has a graphify knowledge graph at graphify-out/.
 Rules:
 - Before answering architecture or codebase questions, read graphify-out/GRAPH_REPORT.md for god nodes and community structure
 - If graphify-out/wiki/index.md exists, navigate it instead of reading raw files
+- For cross-module "how does X relate to Y" questions, prefer `graphify query "<question>"`, `graphify path "<A>" "<B>"`, or `graphify explain "<concept>"` over grep — these traverse the graph's EXTRACTED + INFERRED edges instead of scanning files
 - After modifying code files in this session, run `graphify update .` to keep the graph current (AST-only, no API cost)
 """
 
@@ -199,6 +221,7 @@ This project has a graphify knowledge graph at graphify-out/.
 Rules:
 - Before answering architecture or codebase questions, read graphify-out/GRAPH_REPORT.md for god nodes and community structure
 - If graphify-out/wiki/index.md exists, navigate it instead of reading raw files
+- For cross-module "how does X relate to Y" questions, prefer `graphify query "<question>"`, `graphify path "<A>" "<B>"`, or `graphify explain "<concept>"` over grep — these traverse the graph's EXTRACTED + INFERRED edges instead of scanning files
 - After modifying code files in this session, run `graphify update .` to keep the graph current (AST-only, no API cost)
 """
 
@@ -222,8 +245,12 @@ _GEMINI_HOOK = {
 def gemini_install(project_dir: Path | None = None) -> None:
     """Copy skill file to ~/.gemini/skills/graphify/, write GEMINI.md section, and install BeforeTool hook."""
     # Copy skill file to ~/.gemini/skills/graphify/SKILL.md
+    # On Windows, Gemini CLI prioritises ~/.agents/skills/ over ~/.gemini/skills/
     skill_src = Path(__file__).parent / "skill.md"
-    skill_dst = Path.home() / ".gemini" / "skills" / "graphify" / "SKILL.md"
+    if platform.system() == "Windows":
+        skill_dst = Path.home() / ".agents" / "skills" / "graphify" / "SKILL.md"
+    else:
+        skill_dst = Path.home() / ".gemini" / "skills" / "graphify" / "SKILL.md"
     skill_dst.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy(skill_src, skill_dst)
     (skill_dst.parent / ".graphify_version").write_text(__version__, encoding="utf-8")
@@ -281,8 +308,11 @@ def _uninstall_gemini_hook(project_dir: Path) -> None:
 
 def gemini_uninstall(project_dir: Path | None = None) -> None:
     """Remove the graphify section from GEMINI.md, uninstall hook, and remove skill file."""
-    # Remove skill file
-    skill_dst = Path.home() / ".gemini" / "skills" / "graphify" / "SKILL.md"
+    # Remove skill file (mirror the install path detection)
+    if platform.system() == "Windows":
+        skill_dst = Path.home() / ".agents" / "skills" / "graphify" / "SKILL.md"
+    else:
+        skill_dst = Path.home() / ".gemini" / "skills" / "graphify" / "SKILL.md"
     if skill_dst.exists():
         skill_dst.unlink()
         print(f"  skill removed    ->  {skill_dst}")
@@ -313,8 +343,77 @@ def gemini_uninstall(project_dir: Path | None = None) -> None:
     _uninstall_gemini_hook(project_dir or Path("."))
 
 
-_ANTIGRAVITY_RULES_PATH = Path(".agent") / "rules" / "graphify.md"
-_ANTIGRAVITY_WORKFLOW_PATH = Path(".agent") / "workflows" / "graphify.md"
+_VSCODE_INSTRUCTIONS_MARKER = "## graphify"
+_VSCODE_INSTRUCTIONS_SECTION = """\
+## graphify
+
+Before answering architecture or codebase questions, read `graphify-out/GRAPH_REPORT.md` if it exists.
+If `graphify-out/wiki/index.md` exists, navigate it for deep questions.
+Type `/graphify` in Copilot Chat to build or update the knowledge graph.
+"""
+
+
+def vscode_install(project_dir: Path | None = None) -> None:
+    """Install graphify skill for VS Code Copilot Chat + write .github/copilot-instructions.md."""
+    skill_src = Path(__file__).parent / "skill-vscode.md"
+    if not skill_src.exists():
+        skill_src = Path(__file__).parent / "skill-copilot.md"
+    skill_dst = Path.home() / ".copilot" / "skills" / "graphify" / "SKILL.md"
+    skill_dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy(skill_src, skill_dst)
+    (skill_dst.parent / ".graphify_version").write_text(__version__, encoding="utf-8")
+    print(f"  skill installed  ->  {skill_dst}")
+
+    instructions = (project_dir or Path(".")) / ".github" / "copilot-instructions.md"
+    instructions.parent.mkdir(parents=True, exist_ok=True)
+    if instructions.exists():
+        content = instructions.read_text(encoding="utf-8")
+        if _VSCODE_INSTRUCTIONS_MARKER in content:
+            print(f"  {instructions}  ->  already configured (no change)")
+        else:
+            instructions.write_text(content.rstrip() + "\n\n" + _VSCODE_INSTRUCTIONS_SECTION, encoding="utf-8")
+            print(f"  {instructions}  ->  graphify section added")
+    else:
+        instructions.write_text(_VSCODE_INSTRUCTIONS_SECTION, encoding="utf-8")
+        print(f"  {instructions}  ->  created")
+
+    print()
+    print("VS Code Copilot Chat configured. Type /graphify in the chat panel to build the graph.")
+    print("Note: for GitHub Copilot CLI (terminal), use: graphify copilot install")
+
+
+def vscode_uninstall(project_dir: Path | None = None) -> None:
+    """Remove graphify VS Code Copilot Chat skill and .github/copilot-instructions.md section."""
+    skill_dst = Path.home() / ".copilot" / "skills" / "graphify" / "SKILL.md"
+    if skill_dst.exists():
+        skill_dst.unlink()
+        print(f"  skill removed    ->  {skill_dst}")
+    version_file = skill_dst.parent / ".graphify_version"
+    if version_file.exists():
+        version_file.unlink()
+    for d in (skill_dst.parent, skill_dst.parent.parent, skill_dst.parent.parent.parent):
+        try:
+            d.rmdir()
+        except OSError:
+            break
+
+    instructions = (project_dir or Path(".")) / ".github" / "copilot-instructions.md"
+    if not instructions.exists():
+        return
+    content = instructions.read_text(encoding="utf-8")
+    if _VSCODE_INSTRUCTIONS_MARKER not in content:
+        return
+    cleaned = re.sub(r"\n*## graphify\n.*?(?=\n## |\Z)", "", content, flags=re.DOTALL).rstrip()
+    if cleaned:
+        instructions.write_text(cleaned + "\n", encoding="utf-8")
+        print(f"  graphify section removed from {instructions}")
+    else:
+        instructions.unlink()
+        print(f"  {instructions}  ->  deleted (was empty after removal)")
+
+
+_ANTIGRAVITY_RULES_PATH = Path(".agents") / "rules" / "graphify.md"
+_ANTIGRAVITY_WORKFLOW_PATH = Path(".agents") / "workflows" / "graphify.md"
 
 _ANTIGRAVITY_RULES = """\
 ## graphify
@@ -325,7 +424,8 @@ Rules:
 - Before answering architecture or codebase questions, read graphify-out/GRAPH_REPORT.md for god nodes and community structure
 - If graphify-out/wiki/index.md exists, navigate it instead of reading raw files
 - If the graphify MCP server is active, utilize tools like `query_graph`, `get_node`, and `shortest_path` for precise architecture navigation instead of falling back to `grep`
-- After modifying code files in this session, run `python3 -c "from graphify.watch import _rebuild_code; from pathlib import Path; _rebuild_code(Path('.'))"` to keep the graph current
+- If the MCP server is not active, the CLI equivalents are `graphify query "<question>"`, `graphify path "<A>" "<B>"`, and `graphify explain "<concept>"` — prefer these over grep for cross-module questions
+- After modifying code files in this session, run `graphify update .` to keep the graph current (AST-only, no API cost)
 """
 
 _ANTIGRAVITY_WORKFLOW = """\
@@ -334,7 +434,7 @@ _ANTIGRAVITY_WORKFLOW = """\
 **Description:** Turn any folder of files into a navigable knowledge graph
 
 ## Steps
-Follow the graphify skill installed at ~/.agent/skills/graphify/SKILL.md to run the full pipeline.
+Follow the graphify skill installed at ~/.agents/skills/graphify/SKILL.md to run the full pipeline.
 
 If no path argument is given, use `.` (current directory).
 """
@@ -404,8 +504,8 @@ def _kiro_uninstall(project_dir: Path) -> None:
 
 
 def _antigravity_install(project_dir: Path) -> None:
-    """Install graphify for Google Antigravity: skill + .agent/rules + .agent/workflows."""
-    # 1. Copy skill file to ~/.agent/skills/graphify/SKILL.md
+    """Install graphify for Google Antigravity: skill + .agents/rules + .agents/workflows."""
+    # 1. Copy skill file to ~/.agents/skills/graphify/SKILL.md
     install(platform="antigravity")
 
     # 1.5. Inject YAML frontmatter for native Antigravity tool discovery
@@ -416,7 +516,7 @@ def _antigravity_install(project_dir: Path) -> None:
             frontmatter = "---\nname: graphify-manager\ndescription: Rebuild the code graph or perform manual CLI queries when MCP server is offline.\n---\n\n"
             skill_dst.write_text(frontmatter + content, encoding="utf-8")
 
-    # 2. Write .agent/rules/graphify.md
+    # 2. Write .agents/rules/graphify.md
     rules_path = project_dir / _ANTIGRAVITY_RULES_PATH
     rules_path.parent.mkdir(parents=True, exist_ok=True)
     if rules_path.exists():
@@ -425,7 +525,7 @@ def _antigravity_install(project_dir: Path) -> None:
         rules_path.write_text(_ANTIGRAVITY_RULES, encoding="utf-8")
         print(f"graphify rule written to {rules_path.resolve()}")
 
-    # 3. Write .agent/workflows/graphify.md
+    # 3. Write .agents/workflows/graphify.md
     wf_path = project_dir / _ANTIGRAVITY_WORKFLOW_PATH
     wf_path.parent.mkdir(parents=True, exist_ok=True)
     if wf_path.exists():
@@ -487,7 +587,7 @@ This project has a graphify knowledge graph at graphify-out/.
 
 - Before answering architecture or codebase questions, read graphify-out/GRAPH_REPORT.md for god nodes and community structure
 - If graphify-out/wiki/index.md exists, navigate it instead of reading raw files
-- After modifying code files in this session, run `python3 -c "from graphify.watch import _rebuild_code; from pathlib import Path; _rebuild_code(Path('.'))"` to keep the graph current
+- After modifying code files in this session, run `graphify update .` to keep the graph current (AST-only, no API cost)
 """
 
 
@@ -563,7 +663,7 @@ def _install_opencode_plugin(project_dir: Path) -> None:
         config = {}
 
     plugins = config.setdefault("plugin", [])
-    entry = str(_OPENCODE_PLUGIN_PATH)
+    entry = _OPENCODE_PLUGIN_PATH.as_posix()
     if entry not in plugins:
         plugins.append(entry)
         config_file.write_text(json.dumps(config, indent=2), encoding="utf-8")
@@ -587,7 +687,7 @@ def _uninstall_opencode_plugin(project_dir: Path) -> None:
     except json.JSONDecodeError:
         return
     plugins = config.get("plugin", [])
-    entry = str(_OPENCODE_PLUGIN_PATH)
+    entry = _OPENCODE_PLUGIN_PATH.as_posix()
     if entry in plugins:
         plugins.remove(entry)
         if not plugins:
@@ -858,6 +958,8 @@ def main() -> None:
         print("  aider uninstall         remove graphify section from AGENTS.md")
         print("  copilot install         copy graphify skill to ~/.copilot/skills (GitHub Copilot CLI)")
         print("  copilot uninstall       remove graphify skill from ~/.copilot/skills")
+        print("  vscode install          configure VS Code Copilot Chat (skill + .github/copilot-instructions.md)")
+        print("  vscode uninstall        remove VS Code Copilot Chat configuration")
         print("  claw install            write graphify section to AGENTS.md (OpenClaw)")
         print("  claw uninstall          remove graphify section from AGENTS.md")
         print("  droid install           write graphify section to AGENTS.md (Factory Droid)")
@@ -866,8 +968,8 @@ def main() -> None:
         print("  trae uninstall         remove graphify section from AGENTS.md")
         print("  trae-cn install         write graphify section to AGENTS.md (Trae CN)")
         print("  trae-cn uninstall      remove graphify section from AGENTS.md")
-        print("  antigravity install     write .agent/rules + .agent/workflows + skill (Google Antigravity)")
-        print("  antigravity uninstall   remove .agent/rules, .agent/workflows, and skill")
+        print("  antigravity install     write .agents/rules + .agents/workflows + skill (Google Antigravity)")
+        print("  antigravity uninstall   remove .agents/rules, .agents/workflows, and skill")
         print("  hermes install          write skill to ~/.hermes/skills/graphify/ (Hermes)")
         print("  hermes uninstall        remove skill from ~/.hermes/skills/graphify/")
         print("  kiro install            write skill to .kiro/skills/graphify/ + steering file (Kiro IDE/CLI)")
@@ -918,6 +1020,15 @@ def main() -> None:
             _cursor_uninstall(Path("."))
         else:
             print("Usage: graphify cursor [install|uninstall]", file=sys.stderr)
+            sys.exit(1)
+    elif cmd == "vscode":
+        subcmd = sys.argv[2] if len(sys.argv) > 2 else ""
+        if subcmd == "install":
+            vscode_install()
+        elif subcmd == "uninstall":
+            vscode_uninstall()
+        else:
+            print("Usage: graphify vscode [install|uninstall]", file=sys.stderr)
             sys.exit(1)
     elif cmd == "copilot":
         subcmd = sys.argv[2] if len(sys.argv) > 2 else ""
@@ -1204,7 +1315,7 @@ def main() -> None:
         from graphify.cluster import cluster, score_all
         from graphify.analyze import god_nodes, surprising_connections, suggest_questions
         from graphify.report import generate
-        from graphify.export import to_json
+        from graphify.export import to_json, to_html
         print("Loading existing graph...")
         _raw = json.loads(graph_json.read_text(encoding="utf-8"))
         G = build_from_json(_raw)
@@ -1218,11 +1329,13 @@ def main() -> None:
         questions = suggest_questions(G, communities, labels)
         tokens = {"input": 0, "output": 0}
         report = generate(G, communities, cohesion, labels, gods, surprises,
-                          {}, tokens, str(watch_path), suggested_questions=questions)
+                          {"warning": "cluster-only mode — file stats not available"},
+                          tokens, str(watch_path), suggested_questions=questions)
         out = watch_path / "graphify-out"
         (out / "GRAPH_REPORT.md").write_text(report, encoding="utf-8")
         to_json(G, communities, str(out / "graph.json"))
-        print(f"Done — {len(communities)} communities. GRAPH_REPORT.md and graph.json updated.")
+        to_html(G, communities, str(out / "graph.html"), community_labels=labels or None)
+        print(f"Done — {len(communities)} communities. GRAPH_REPORT.md, graph.json and graph.html updated.")
 
     elif cmd == "update":
         watch_path = Path(sys.argv[2]) if len(sys.argv) > 2 else Path(".")
@@ -1235,7 +1348,8 @@ def main() -> None:
         if ok:
             print("Code graph updated. For doc/paper/image changes run /graphify --update in your AI assistant.")
         else:
-            print("Nothing to update or rebuild failed — check output above.")
+            print("Nothing to update or rebuild failed — check output above.", file=sys.stderr)
+            sys.exit(1)
 
     elif cmd == "benchmark":
         from graphify.benchmark import run_benchmark, print_benchmark
